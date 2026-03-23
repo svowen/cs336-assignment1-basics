@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+# os.chdir('./tests')
+os.getcwd()
+
 from collections.abc import Iterable
 from typing import IO, Any, BinaryIO
 
@@ -8,6 +11,33 @@ import numpy.typing as npt
 import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
+
+try: 
+    from utils.linear import Linear
+    from utils.embedding import Embedding
+    from utils.rmsnorm import Rmsnorm
+    from utils.swiglu import Swiglu
+    from utils.rope import Rope
+    from utils.attention import Attention
+    from utils.mha import MHA
+
+except ImportError:
+    from .utils.linear import Linear
+    from .utils.embedding import Embedding
+    from .utils.rmsnorm import Rmsnorm
+    from .utils.swiglu import Swiglu
+    from .utils.rope import Rope
+    from .utils.attention import Attention
+    from .utils.mha import MHA
+
+try: 
+    from pretokenization_example import find_chunk_boundaries
+except ImportError:
+    from .pretokenization_example import find_chunk_boundaries
+try:
+    from tokenizer import Tokenizer
+except ImportError:
+    from .tokenizer import Tokenizer
 
 
 def run_linear(
@@ -29,7 +59,10 @@ def run_linear(
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
 
-    raise NotImplementedError
+    layer =  Linear(d_in, d_out)
+    layer.load_state_dict({"weight": weights})
+
+    return layer(in_features)
 
 
 def run_embedding(
@@ -49,9 +82,15 @@ def run_embedding(
 
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
-    """
 
-    raise NotImplementedError
+    Run:
+        uv run pytest -k test_embedding.
+    """
+    embedding = Embedding(vocab_size, d_model)
+    embedding.embedding_matrix.data.copy_(weights)     # error: embedding.embedding_matrix = weights 
+
+    return embedding.forward(token_ids)
+
 
 
 def run_swiglu(
@@ -83,9 +122,12 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+    # raise NotImplementedError
+    swiglu = Swiglu(d_model, d_ff, w1_weight, w2_weight, w3_weight)
 
+    return swiglu(in_features) 
 
+import math
 def run_scaled_dot_product_attention(
     Q: Float[Tensor, " ... queries d_k"],
     K: Float[Tensor, " ... keys d_k"],
@@ -104,7 +146,20 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    # matQK = torch.matmul(Q, K.transpose(-2,-1))
+    # if mask is not None:
+    #     matQK[~mask] -= math.inf
+    # dk = Q.shape[-1]
+    # # dim = len(matQK.shape)
+    # # print('here-->', dim)
+    
+    # matA = run_softmax(matQK/math.sqrt(dk), -1) 
+    # return torch.matmul(matA,V)
+    attention = Attention() 
+    ret = attention(Q, K, V, mask)
+
+    return ret
+
 
 
 def run_multihead_self_attention(
@@ -138,7 +193,18 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    d_model = o_proj_weight.shape[-2]
+    num_heads = q_proj_weight.shape[-1] // in_features.shape[-1]
+    concat_in_features = in_features * num_heads
+    q = concat_in_features @ q_proj_weight.T
+    k =  concat_in_features @ k_proj_weight.T
+    v =  concat_in_features @ v_proj_weight.T
+    mh_out = MHA()
+    ret = mh_out(d_model, num_heads, Q = q, K = k, V = v)
+    return ret  @ o_proj_weight.T
+
+
+
 
 
 def run_multihead_self_attention_with_rope(
@@ -200,8 +266,8 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
-
+    ret = Rope(theta, d_k, max_seq_len)
+    return ret.forward(in_query_or_key, token_positions)
 
 def run_transformer_block(
     d_model: int,
@@ -300,7 +366,7 @@ def run_transformer_lm(
         num_heads (int): Number of heads to use in multi-headed attention. `d_model` must be
             evenly divisible by `num_heads`.
         d_ff (int): Dimensionality of the feed-forward inner layer (section 3.3).
-        rope_theta (float): The RoPE $\Theta$ parameter.
+        rope_theta (float): The RoPE $\\Theta$ parameter.
         weights (dict[str, Tensor]):
             State dict of our reference implementation. {num_layers} refers to an
             integer between `0` and `num_layers - 1` (the layer index).
@@ -378,8 +444,14 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+    out = Rmsnorm(d_model, eps).forward(in_features)
+    out = out * weights.view(*([1] * (out.ndim - 1)), -1)
 
+    # for i in range(len(ret)):
+    #     for j in range(len(ret[i])):
+    #         ret[i][j] = torch.tensor([ret[i][j][k] * weights[k] for k in range(d_model)])
+    
+    return out 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
     """Given a tensor of inputs, return the output of applying SiLU
@@ -431,7 +503,11 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+    in_features_max = in_features.max(dim=dim, keepdim = True).values
+    exp = torch.exp(in_features - in_features_max)
+    
+    return exp / exp.sum(dim, keepdim=True)
+
 
 
 def run_cross_entropy(
@@ -559,8 +635,28 @@ def get_tokenizer(
     Returns:
         A BPE tokenizer that uses the provided vocab, merges, and special tokens.
     """
-    raise NotImplementedError
+    return Tokenizer(vocab, merges, special_tokens)
 
+import re
+print('test')
+import os 
+print(os.getcwd())
+import sys
+import regex as re
+
+# helper fn
+def helper_combine_pair(t, pair):
+    out = []
+    i = 0
+    while i < len(t):
+        if i + 1 < len(t) and t[i] == pair[0] and t[i + 1] == pair[1]:
+            out.append(pair[0] + pair[1])
+            i += 2
+        else:
+            out.append(t[i])
+            i += 1
+    return tuple(out)
+    #Q&A: what if two paris in one pre-token...A: handled
 
 def run_train_bpe(
     input_path: str | os.PathLike,
@@ -570,7 +666,6 @@ def run_train_bpe(
 ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
     """Given the path to an input corpus, run train a BPE tokenizer and
     output its vocabulary and merges.
-
     Args:
         input_path (str | os.PathLike): Path to BPE tokenizer training data.
         vocab_size (int): Total number of items in the tokenizer's vocabulary (including special tokens).
@@ -578,7 +673,6 @@ def run_train_bpe(
             These strings will never be split into multiple tokens, and will always be
             kept as a single token. If these special tokens occur in the `input_path`,
             they are treated as any other string.
-
     Returns:
         tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
             vocab:
@@ -589,4 +683,132 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+    with open(input_path, "rb") as f:
+        num_processes = 4
+        boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
+        # step1 pretoken
+        chunks = []
+        pretokens = {}
+        # pattern2 = r"""(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+        pattern2 = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+
+        for start, end in zip(boundaries[:-1], boundaries[1:]):
+            f.seek(start)
+            chunk = f.read(end - start).decode("utf-8", errors="ignore")
+            # chunk = [i for i in chunk]
+            for special_token in special_tokens:
+                chunk = chunk.replace(special_token, '')
+            chunks.append(chunk)
+            
+
+            # pattern = '|'.join(vocab_list) #(map(re.escape, special_tokens))
+            # re.findall(pattern, "some text that i'll pre-tokenize")
+            chunk0 = re.findall(pattern2, chunk)
+            for i in chunk0:
+                i = tuple(list(i))
+                if i not in pretokens:
+                    pretokens[i] = 1
+                else:
+                    pretokens[i] += 1
+        print('end')
+
+    # step2 merge
+    # vocab_lst = special_tokens.copy()
+    # vocab_lst += [bytes([i]) for i in range(256)]
+    merges = []
+
+    while len(merges) + len(special_tokens) + 256 < vocab_size:
+        # do counter init
+        if len(merges) % 100 == 0:
+            print('iteration', len(merges))
+        counter = {}
+        for pretoken in pretokens:
+            for i in range(1, len(pretoken)):
+                bp = (pretoken[i-1], pretoken[i])
+                if bp not in counter:
+                    counter[bp] = pretokens[pretoken]
+                else:
+                    counter[bp] += pretokens[pretoken]
+        
+        # max_key = max(counter, key = counter.get)
+        # max(counter.items(), key=lambda x: (x[1], x[0]))[0]
+        best_key = max(counter.items(), key=lambda kv: (kv[1], kv[0]), default=(None, None))[0]
+        # best_key 
+        if not best_key:
+            break 
+        # if best_key[0] == best_key[1] == ' ':
+        #     continue 
+        
+        new_merge = (best_key[0].encode('utf-8'), best_key[1].encode('utf-8'))
+        merges.append(new_merge)
+        # update counter
+        pretoken_new_list = []
+
+        try:
+            for pretoken in pretokens:
+                pretoken_new = helper_combine_pair(pretoken, best_key)
+                if pretoken != pretoken_new:
+                    pretoken_new_list.append((pretoken_new, pretoken))
+
+            for i, i_old in pretoken_new_list:
+                pretokens[i] = pretokens.pop(i_old)
+        except UnicodeEncodeError:
+            pass
+            
+        
+        # pretokens: counter of pretoken
+        # pretoken
+        # counter: bp in progress
+        #         
+        # print('progress:', len(pretokens))
+
+    # step3 vocab
+    vocab = {}
+    for i in range(256):
+        vocab[i] = chr(i).encode('utf-8')
+    # continue from previous i
+    for j in special_tokens:
+        i += 1
+        vocab[i] = j.encode('utf-8') 
+    for a,b in merges:
+        i += 1
+        vocab[i] = a+b
+        # print(vocab)
+    
+    # print(merges[:5])
+    return vocab, merges
+
+        
+
+
+
+
+
+                
+
+
+
+
+
+
+
+
+
+
+
+# run code
+if __name__ == "__main__":
+    input_path = '../data/TinyStoriesV2-GPT4-valid.txt'
+    print('here')
+    # input_path = '../data/TinyStoriesV2-GPT4-train.txt'
+    vocab_size=1000
+    special_tokens=["<|endoftext|>", "<|pad|>"]
+
+    vocab0, merges0 = run_train_bpe(
+        input_path,
+        vocab_size,
+        special_tokens)
+
+    print(vocab0, merges0)
+    # os.getcwd()
+
