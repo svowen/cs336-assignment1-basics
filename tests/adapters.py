@@ -320,7 +320,8 @@ def run_transformer_block(
                 applied in the transformer block.
                 Shape is (d_model,).
             - `ffn.w1.weight`
-                Weight of the first linear transformation in the FFN.
+                Weight of
+                 the first linear transformation in the FFN.
                 Shape is (d_model, d_ff).
             - `ffn.w2.weight`
                 Weight of the second linear transformation in the FFN.
